@@ -13,19 +13,21 @@ class SerialComm:
     Handles serial communication with the sensor device.
     """
 
-    def __init__(self, sensor_name: str, scale_range: int, port: str, baudrate: int = 115200, timeout: float = 1):
+    def __init__(self, sensor_name: str, scale_range: int, odr: int, port: str, baudrate: int = 115200, timeout: float = 1):
         """
         Initialize the SerialComm instance.
 
         Parameters:
             sensor_name (str): Name of the sensor.
             scale_range (int): Sensor scale range.
+            odr (int): Data Output Rate (converted value).
             port (str): Serial port to connect to.
             baudrate (int): Baud rate for the connection.
             timeout (float): Timeout for the serial connection.
         """
         self.sensor_name = sensor_name
         self.scale_range = scale_range
+        self.odr = odr
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
@@ -56,11 +58,11 @@ class SerialComm:
             self.ser.write(b'import API\r\n')
             line = self.ser.readline().decode('utf-8').strip()
             if 'import API' in line:
-                # Initialize sensor
-                cmd = f'API.init_sensor(API.acc_range[{self.scale_range}])\r\n'
+                # Initialize sensor with scale_range and odr
+                cmd = f'API.init_sensor(API.acc_range[{self.scale_range}],API.odr[{self.odr}])\r\n'
                 self.ser.write(cmd.encode())
                 line = self.ser.readline().decode('utf-8').strip()
-                if line == f'>>> API.init_sensor(API.acc_range[{self.scale_range}])':
+                if line == f'>>> API.init_sensor(API.acc_range[{self.scale_range}],API.odr[{self.odr}])':
                     # Check sensor identity
                     self.ser.write(b'API.check_who_am_i()\r\n')
                     line = self.ser.readline().decode('utf-8').strip()

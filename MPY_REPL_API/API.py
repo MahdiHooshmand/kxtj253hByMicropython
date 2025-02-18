@@ -1,4 +1,4 @@
-from machine import I2C,Pin
+from machine import I2C, Pin
 import time
 
 # Configure I2C
@@ -10,19 +10,37 @@ address = 0x0E
 # Register addresses
 CTRL_REG1 = 0x1B
 CTRL_REG2 = 0x1D
+DATA_CTRL_REG = 0x21
 WHO_AM_I = 0x0F
 
 acc_range = {
-    2:  0b11000000,
-    4:  0b11001000,
-    8:  0b11010000,
+    2: 0b11000000,
+    4: 0b11001000,
+    8: 0b11010000,
     16: 0b11000100
 }
 
-def init_sensor(ctrl_reg1_value):
+odr = {
+    1:0b00001000,
+    2:0b00001001,
+    4:0b00001010,
+    8:0b00001011,
+    16:0b00000000,
+    32:0b00000001,
+    64:0b00000010,
+    128:0b00000011,
+    256:0b00000100,
+    512:0b00000101,
+    1024:0b00000110,
+    2048:0b00000111
+}
+
+def init_sensor(ctrl_reg1_value,data_ctrl_reg_value):
     """Initialize the KXTJ3-1057 accelerometer sensor with given register values."""
     # Write CTRL_REG1
     i2c.writeto_mem(address, CTRL_REG1, bytes([0b00000000]))
+    time.sleep(0.2)
+    i2c.writeto_mem(address, DATA_CTRL_REG, bytes([data_ctrl_reg_value]))
     time.sleep(0.2)
     i2c.writeto_mem(address, CTRL_REG1, bytes([ctrl_reg1_value]))
 
@@ -41,9 +59,21 @@ def check_who_am_i():
         return False
 
 def read_accel(scale_range):
+    if scale_range == 2:
+        scale_range = 1.999
+    elif scale_range == 4:
+        scale_range = 3.998
+    elif scale_range == 8:
+        scale_range = 7.996
+    elif scale_range == 16:
+        scale_range = 15.992
     """Read acceleration data from the sensor and convert it to g values."""
     # Read 6 bytes of acceleration data
     time.sleep(2)
+
+    # Store previous values
+    prev_x, prev_y, prev_z = None, None, None
+
     while True:
         data = i2c.readfrom_mem(address, 0x06, 6)
 
@@ -71,5 +101,7 @@ def read_accel(scale_range):
         y = y * sensitivity
         z = z * sensitivity
 
-        print(x, y, z)
-        time.sleep_ms(20)
+        # Check if values have changed
+        if (x, y, z) != (prev_x, prev_y, prev_z):
+            print( x, y, z)
+            prev_x, prev_y, prev_z = x, y, z

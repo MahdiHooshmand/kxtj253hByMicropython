@@ -50,6 +50,40 @@ class SensorApp(QtWidgets.QWidget):
         self.is_saving = False
         self.start_time_saving = None
 
+        # دیکشنری نگاشت مقادیر DOR به odr
+        self.dor_to_odr = {
+            "0.781": 1,
+            "1.563": 2,
+            "3.125": 4,
+            "6.25": 8,
+            "12.5": 16,
+            "25": 32,
+            "50": 64,
+            "100": 128,
+            "200": 256,
+            "400": 512,
+            "800": 1024,
+            "1600": 2048
+        }
+        # متغیر odr برای ذخیره مقدار انتخاب شده
+        self.odr = None
+
+        # دیکشنری نگاشت odr به decimation factor برای کاهش تعداد نقاط نمودار
+        self.decimation_mapping = {
+            1: 1,
+            2: 1,
+            4: 1,
+            8: 2,
+            16: 3,
+            32: 5,
+            64: 10,
+            128: 20,
+            256: 40,
+            512: 80,
+            1024: 160,
+            2048: 320
+        }
+
         self.init_ui()
 
     def init_ui(self):
@@ -85,6 +119,14 @@ class SensorApp(QtWidgets.QWidget):
         self.port_combo.addItems(port_list)
         input_layout.addWidget(port_label)
         input_layout.addWidget(self.port_combo)
+
+        # **Data Output Rate (DOR) selection**
+        dor_label = QtWidgets.QLabel('Data Output Rate (DOR):')
+        self.dor_combo = QtWidgets.QComboBox()
+        # اضافه کردن مقادیر قابل انتخاب به صورت رشته
+        self.dor_combo.addItems(list(self.dor_to_odr.keys()))
+        input_layout.addWidget(dor_label)
+        input_layout.addWidget(self.dor_combo)
 
         # Connect/Disconnect button
         self.connect_button = QtWidgets.QPushButton('Connect')
@@ -178,8 +220,14 @@ class SensorApp(QtWidgets.QWidget):
         scale_range = int(self.scale_combo.currentText())
         usb_port = self.port_combo.currentText()
 
+        # دریافت مقدار انتخاب شده DOR و تبدیل آن به odr
+        dor_value = self.dor_combo.currentText()
+        odr = self.dor_to_odr[dor_value]
+        self.odr = odr  # ذخیره odr در متغیر نمونه
+
         try:
-            self.serial_comm = SerialComm(sensor_name, scale_range, usb_port)
+            # ارسال مقدار odr به عنوان پارامتر سوم به SerialComm
+            self.serial_comm = SerialComm(sensor_name, scale_range, odr, usb_port)
             self.serial_comm.connect()
 
             # Set sensor scale and adjust plot Y-axis range
@@ -240,6 +288,8 @@ class SensorApp(QtWidgets.QWidget):
     def read_serial_data(self):
         """
         Continuously read serial data in a separate thread and put valid data into a queue.
+        Additionally, if saving is enabled, write each received data row to the CSV file immediately,
+        with the timestamp of the actual read time.
         """
         while self.serial_comm and self.serial_comm.ser is not None:
             data = self.serial_comm.read_line()
@@ -249,38 +299,47 @@ class SensorApp(QtWidgets.QWidget):
                     try:
                         x, y, z = map(float, values)
                         t = time.time() - self.start_time
+                        # ذخیره فوری در فایل به محض دریافت داده
+                        if self.is_saving:
+                            if self.start_time_saving is None:
+                                self.start_time_saving = time.time()
+                            elapsed = time.time() - self.start_time_saving
+                            try:
+                                with open(self.save_file_path, 'a', newline='') as csvfile:
+                                    csvwriter = csv.writer(csvfile)
+                                    csvwriter.writerow([elapsed, x, y, z])
+                            except Exception as e:
+                                print("Error writing to CSV:", e)
+                        # قرار دادن داده در صف برای آپدیت نمودار
                         self.data_queue.put((t, x, y, z))
                     except Exception as e:
                         print("Error parsing data:", e)
             else:
-                time.sleep(0.01)  # Avoid busy-waiting
+                time.sleep(0.01)  # جلوگیری از مصرف بیش از حد CPU
 
     def update_plot(self):
         """
-        Process new data from the queue, perform decimation (average every 5 points),
-        update the plot, and save raw data if saving is enabled.
+        Process new data from the queue, perform decimation (grouping data points according to the selected odr),
+        and update the plot.
         """
-        rows_to_write = []
-        # Process all available data from the queue
+        # پردازش تمامی داده‌های موجود در صف
         while not self.data_queue.empty():
             try:
                 t, x, y, z = self.data_queue.get_nowait()
             except queue.Empty:
                 break
 
-            # If saving is enabled, prepare data row (using elapsed time since saving started)
-            if self.is_saving:
-                if self.start_time_saving is None:
-                    self.start_time_saving = time.time()
-                elapsed = time.time() - self.start_time_saving
-                rows_to_write.append([elapsed, x, y, z])
-
-            # Add the data point to the decimation buffer
+            # افزودن داده به بافر decimation
             self.decimation_buffer.append((t, x, y, z))
-            # If there are at least 5 data points, average them to form one plot point
-            if len(self.decimation_buffer) >= 5:
-                group = self.decimation_buffer[:5]
-                self.decimation_buffer = self.decimation_buffer[5:]
+
+            # تعیین decimation factor بر اساس odr انتخاب شده
+            decimation_factor = self.decimation_mapping.get(self.odr, 5)
+
+            # اگر تعداد داده‌های موجود در بافر به مقدار decimation_factor رسید،
+            # میانگین آن‌ها گرفته شده و به عنوان یک نقطه برای نمودار استفاده می‌شود.
+            if len(self.decimation_buffer) >= decimation_factor:
+                group = self.decimation_buffer[:decimation_factor]
+                self.decimation_buffer = self.decimation_buffer[decimation_factor:]
                 avg_t = sum(pt[0] for pt in group) / len(group)
                 avg_x = sum(pt[1] for pt in group) / len(group)
                 avg_y = sum(pt[2] for pt in group) / len(group)
@@ -290,16 +349,7 @@ class SensorApp(QtWidgets.QWidget):
                 self.plot_y.append(avg_y)
                 self.plot_z.append(avg_z)
 
-        # Write the accumulated rows to the CSV file if saving is enabled
-        if rows_to_write:
-            try:
-                with open(self.save_file_path, 'a', newline='') as csvfile:
-                    csvwriter = csv.writer(csvfile)
-                    csvwriter.writerows(rows_to_write)
-            except Exception as e:
-                print("Error writing to CSV:", e)
-
-        # Remove decimated points older than 5 seconds
+        # حذف نقاط decimated قدیمی‌تر از 5 ثانیه
         current_time = time.time() - self.start_time
         time_threshold = current_time - 5
         new_plot_time = []
@@ -317,8 +367,8 @@ class SensorApp(QtWidgets.QWidget):
         self.plot_y = new_plot_y
         self.plot_z = new_plot_z
 
-        # Update the plot using NumPy arrays for efficient bulk updates
-        if self.plot_time:  # Only update if there is data
+        # به‌روزرسانی نمودار با استفاده از آرایه‌های NumPy
+        if self.plot_time:
             self.curve_x.setData(np.array(self.plot_time), np.array(self.plot_x))
             self.curve_y.setData(np.array(self.plot_time), np.array(self.plot_y))
             self.curve_z.setData(np.array(self.plot_time), np.array(self.plot_z))
